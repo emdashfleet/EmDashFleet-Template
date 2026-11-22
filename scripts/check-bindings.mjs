@@ -8,10 +8,18 @@
 // be there under its Wrangler key, no other binding may be, and wrangler.jsonc
 // holds no key beyond those and the Worker settings of WORKER_SETTINGS, so a
 // renamed, missing or added binding of any type fails the template checks.
+// The two compatibility settings are checked by value, not only by key
+// (security audit of 2026-11-21, Template S7): compatibility_flags is exactly
+// ["nodejs_compat"], the flags Fleet uploads with every build, so a flag such as
+// nodejs_compat_do_not_populate_process_env cannot keep EMDASH_SITE_URL and
+// EMDASH_ENCRYPTION_KEY out of process.env or global_fetch_strictly_public
+// change how the site's own fetches route; compatibility_date is a date from
+// 2025-04-01, when nodejs_compat started to populate process.env.
 // wrangler.jsonc is read with Wrangler's own reader.
 //
 // Usage: node scripts/check-bindings.mjs [wrangler.jsonc] [fleet-site-bindings.json]
 // https://developers.cloudflare.com/workers/wrangler/configuration/
+// https://developers.cloudflare.com/workers/configuration/compatibility-flags/
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { experimental_readRawConfig } from "wrangler";
@@ -19,6 +27,12 @@ import { report } from "./lib/report.mjs";
 
 /** The keys of wrangler.jsonc that declare no binding. */
 const WORKER_SETTINGS = new Set(["$schema", "name", "main", "compatibility_date", "compatibility_flags", "observability", "triggers"]);
+
+/** The compatibility flags of every build Fleet uploads. */
+const COMPATIBILITY_FLAGS = ["nodejs_compat"];
+
+/** The compatibility date from which nodejs_compat populates process.env with the text and JSON bindings. */
+const PROCESS_ENV_DATE = "2025-04-01";
 
 /**
  * @typedef {object} SiteBinding
@@ -59,6 +73,13 @@ export function bindingFindings(config, bindings, file = "wrangler.jsonc") {
 		if (!WORKER_SETTINGS.has(key) && !expected.has(key)) {
 			findings.push({ file, rule: "unexpected-key", message: `${key} is neither a Worker setting nor a binding of fleet-site-bindings.json` });
 		}
+	}
+	if (JSON.stringify(config.compatibility_flags) !== JSON.stringify(COMPATIBILITY_FLAGS)) {
+		findings.push({ file, rule: "compatibility-flags", message: `compatibility_flags is ${JSON.stringify(config.compatibility_flags) ?? "missing"}; it must be ${JSON.stringify(COMPATIBILITY_FLAGS)}` });
+	}
+	const date = config.compatibility_date;
+	if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || date < PROCESS_ENV_DATE) {
+		findings.push({ file, rule: "compatibility-date", message: `compatibility_date is ${JSON.stringify(date) ?? "missing"}; it must be a YYYY-MM-DD date of ${PROCESS_ENV_DATE} or later` });
 	}
 	for (const [key, names] of expected) {
 		if (!(key in config)) {

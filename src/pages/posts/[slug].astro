@@ -12,6 +12,7 @@ import { Comments, CommentForm } from "emdash/ui/comments";
 import Base from "../../layouts/Base.astro";
 import Byline from "../../components/Byline.astro";
 import PostCard from "../../components/PostCard.astro";
+import { mediaFilePath } from "../../utils/layout-values";
 import { formatDate } from "../../utils/locale";
 import { getReadingTime } from "../../utils/reading-time";
 import { resolveBlogSiteIdentity } from "../../utils/site-identity";
@@ -48,7 +49,7 @@ function getImageUrl(img: unknown): string | undefined {
 		(typeof meta?.storageKey === "string" ? meta.storageKey : undefined) ||
 		(typeof image.id === "string" ? image.id : undefined);
 	if (storageKey) {
-		return `${Astro.url.origin}/_emdash/api/media/file/${storageKey}`;
+		return `${Astro.url.origin}${mediaFilePath(storageKey)}`;
 	}
 	return undefined;
 }

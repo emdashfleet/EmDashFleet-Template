@@ -10,6 +10,11 @@ coverage/
 *.log
 .DS_Store
 
+# Private keys and certificates are never committed; a site holds no key file.
+*.pem
+*.key
+*.p12
+
 # Written by every build: EmDash's migration manifest, Fleet's upload form and
 # the local site data of astro dev.
 .emdash/migrations.json

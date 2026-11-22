@@ -12,7 +12,7 @@
 // https://docs.npmjs.com/generating-provenance-statements
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { report } from "./lib/report.mjs";
+import { escapeCommandData, escapeCommandProperty, report } from "./lib/report.mjs";
 
 const LOCKFILE = "package-lock.json";
 
@@ -95,11 +95,20 @@ export function parseAudit(stdout) {
 	return audit;
 }
 
+/**
+ * A workflow command that GitHub Actions shows as a warning on the job. Its text holds package names and versions from the registry, so it is escaped and cannot end the line to start another command.
+ * @param {string} file
+ * @param {string} message
+ * @returns {string}
+ */
+export function warningCommand(file, message) {
+	return `::warning file=${escapeCommandProperty(file)}::${escapeCommandData(message)}`;
+}
+
 if (import.meta.main) {
 	const result = spawnSync("npm", ["audit", "signatures", "--json", "--include-attestations"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 	if (result.error) throw result.error;
 	const { failures, warnings } = signatureFindings(parseAudit(result.stdout), installedPackages(readFileSync(LOCKFILE, "utf8")));
-	// A workflow command: GitHub Actions shows each line as a warning on the job.
-	for (const warning of warnings) console.log(`::warning file=${LOCKFILE}::${warning}`);
+	for (const warning of warnings) console.log(warningCommand(LOCKFILE, warning));
 	report("audit-signatures", failures);
 }

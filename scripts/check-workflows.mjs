@@ -11,11 +11,18 @@
 // through `env:`; and no trigger that runs with secrets on events outsiders
 // can cause. On top of that, fleet-build.yml and fleet-update.yml must keep
 // exactly the trigger workflow_dispatch, the run-name Fleet matches runs by,
-// `permissions: contents: read`, no `secrets` reference and their required
-// string inputs, and every job of template-checks.yml must carry the
-// repository condition of HR-119, so it never runs in a site repository, and
-// must run gitleaks (APB-001): a release archive of a pinned version, checked
-// against its SHA-256, over the commits of the push or pull request.
+// `permissions: contents: read`, no `secrets` reference, their required
+// string inputs, the checkout, the artifact (name, paths, retention, hidden
+// files) and the lines of the script that hold a run to the commit and the
+// files Fleet expects (the build's commit_sha check and its two output paths,
+// the update's path allowlist and its refusal of a core package as a plugin,
+// and the signature check of both, security audit of 2026-11-21, Page S9),
+// and template-checks.yml must keep `permissions: contents:
+// read` and its branch lists, every job of it must carry the repository
+// condition of HR-119, so it never runs in a site repository, and it must run
+// gitleaks (APB-001): a release archive of a pinned version, checked against
+// its SHA-256, over the commits of the push or pull request. All three install
+// npm globally at one exact version and read it back on the next line (S10).
 //
 // Usage: node scripts/check-workflows.mjs
 // https://docs.github.com/en/actions/reference/security/secure-use
@@ -30,10 +37,14 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 const FORBIDDEN_TRIGGERS = new Set(["pull_request_target", "workflow_run", "issue_comment", "repository_dispatch"]);
 const TEMPLATE_CONDITION = "github.repository == 'Zeyadigital/EmDashFleet-Template'";
 const GITLEAKS_STEP = "gitleaks";
+/** The branches whose pushes and pull requests start template-checks.yml. */
+const TEMPLATE_BRANCHES = { push: ["dev", "main"], pull_request: ["dev", "main"] };
 
 /**
  * What Fleet relies on in each build workflow it dispatches: the required string inputs, the run-name it finds its runs
- * by, the concurrency group (a fixed name, so no run cancels another), the checkout ref and the artifact name.
+ * by, the concurrency group (a fixed name, so no run cancels another), the checkout ref, the artifact name and the
+ * paths it holds, and the lines of a `run:` script that keep a run to the commit and the files Fleet expects
+ * (`runLines` start with the text, `exactLines` equal it).
  */
 const BUILD_WORKFLOWS = {
 	"fleet-build.yml": {
@@ -42,6 +53,11 @@ const BUILD_WORKFLOWS = {
 		concurrency: "fleet-build",
 		checkoutRef: "${{ inputs.commit_sha }}",
 		artifact: "fleet-bundle-${{ inputs.job_id }}",
+		// The artifact's root is the repository: the bundle and the static output, nothing else.
+		uploadPaths: ["fleet-bundle/", "dist/client/"],
+		// The run builds the commit Fleet named, which must be the head of the dispatched branch.
+		runLines: ['[[ "$COMMIT_SHA" == "$GITHUB_SHA" ]]', "[[ -s fleet-bundle/upload-form ]]", "[[ -d dist/client ]]"],
+		exactLines: ["node scripts/audit-signatures.mjs"],
 	},
 	"fleet-update.yml": {
 		runName: "fleet-update ${{ inputs.job_id }}",
@@ -49,6 +65,19 @@ const BUILD_WORKFLOWS = {
 		concurrency: "fleet-update",
 		checkoutRef: "${{ github.sha }}",
 		artifact: "fleet-update-${{ inputs.job_id }}",
+		uploadPaths: ["${{ runner.temp }}/fleet-update/"],
+		// Only package.json and package-lock.json may change; any other path fails the run before it is stored.
+		// The content of the two files is checked as well (scripts/check-update-changes.mjs), and a core update stops
+		// on a lockfile that is not version 3 or that holds no EmDash package to replace.
+		runLines: ['case "$path" in package.json|package-lock.json) ;; *)', "node scripts/check-update-changes.mjs", "if (lock.lockfileVersion !== 3)", "if (removed === 0)"],
+		// The two installs run no script and fetch no dependency from a git reference or a URL; nothing may follow the flags.
+		exactLines: [
+			"core='^(emdash|@emdash-cms/(cloudflare|admin)|@cloudflare/kumo)$'",
+			'[[ "$KIND" == core || ! "$PACKAGE" =~ $core ]] || { echo "::error::a plugin update names an EmDash core package"; exit 1; }',
+			"node scripts/audit-signatures.mjs",
+			'plugin) npm install "$PACKAGE@$VERSION" --save-exact --ignore-scripts --allow-git=none --allow-remote=none ;;',
+			"npm install --ignore-scripts --allow-git=none --allow-remote=none",
+		],
 	},
 };
 
@@ -73,6 +102,37 @@ function triggers(on) {
 	if (typeof on === "string") return [on];
 	if (Array.isArray(on)) return on.filter((name) => typeof name === "string");
 	return isObject(on) ? Object.keys(on) : [];
+}
+
+/**
+ * The trimmed, non-empty lines of a string.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function lines(text) {
+	return text
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line !== "");
+}
+
+/**
+ * Whether a workflow, as plain values, reaches the secrets context: a `secrets` key (`secrets: inherit`), a `${{ }}`
+ * expression that names `secrets` in any spelling (`secrets.X`, `secrets['X']`, `toJSON(secrets)`), or an `if:`
+ * condition that does without the braces. A comment is not part of the parsed workflow, so the comments that say a
+ * file "holds no secret" are not findings.
+ * @param {unknown} value
+ * @param {string} [key] the key that holds `value`
+ * @returns {boolean}
+ */
+function referencesSecrets(value, key = "") {
+	if (typeof value === "string") {
+		const inExpression = [...value.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].some((expression) => /\bsecrets\b/.test(expression[1] ?? ""));
+		return inExpression || (key === "if" && /\bsecrets\b/.test(value));
+	}
+	if (Array.isArray(value)) return value.some((item) => referencesSecrets(item, key));
+	if (!isObject(value)) return false;
+	return Object.entries(value).some(([name, nested]) => name === "secrets" || referencesSecrets(nested, name));
 }
 
 /**
@@ -152,11 +212,10 @@ export function lintWorkflow(file, text) {
 /**
  * The findings of the guard on fleet-build.yml or fleet-update.yml.
  * @param {keyof typeof BUILD_WORKFLOWS} name
- * @param {string} text
  * @param {unknown} workflow the file as plain values
  * @returns {Finding[]}
  */
-export function guardBuildWorkflow(name, text, workflow) {
+export function guardBuildWorkflow(name, workflow) {
 	const file = `${WORKFLOWS_DIR}/${name}`;
 	const spec = BUILD_WORKFLOWS[name];
 	/** @type {Finding[]} */
@@ -175,7 +234,7 @@ export function guardBuildWorkflow(name, text, workflow) {
 	for (const [job, body] of Object.entries(isObject(workflow.jobs) ? workflow.jobs : {})) {
 		if (isObject(body) && "permissions" in body) fail("guard-permissions", `job ${job} sets its own permissions`);
 	}
-	if (/\bsecrets\./.test(text)) fail("guard-secrets", "the workflow references secrets");
+	if (referencesSecrets(workflow)) fail("guard-secrets", "the workflow references secrets");
 
 	const dispatch = isObject(workflow.on) ? workflow.on.workflow_dispatch : null;
 	const inputs = isObject(dispatch) && isObject(dispatch.inputs) ? dispatch.inputs : {};
@@ -196,29 +255,98 @@ export function guardBuildWorkflow(name, text, workflow) {
 		fail("guard-checkout", `one actions/checkout step with ref: ${spec.checkoutRef} and persist-credentials: false`);
 	}
 	const [upload, ...otherUploads] = uses("actions/upload-artifact@");
-	if (otherUploads.length > 0 || !isObject(upload) || !isObject(upload.with) || upload.with.name !== spec.artifact || upload.with["retention-days"] !== 1) {
-		fail("guard-artifact", `one actions/upload-artifact step with name: ${spec.artifact} and retention-days: 1`);
+	const uploadPaths = isObject(upload) && isObject(upload.with) && typeof upload.with.path === "string" ? lines(upload.with.path) : [];
+	if (
+		otherUploads.length > 0 ||
+		!isObject(upload) ||
+		!isObject(upload.with) ||
+		upload.with.name !== spec.artifact ||
+		upload.with["retention-days"] !== 1 ||
+		upload.with["if-no-files-found"] !== "error" ||
+		upload.with["include-hidden-files"] !== true ||
+		uploadPaths.join("\n") !== spec.uploadPaths.join("\n")
+	) {
+		fail(
+			"guard-artifact",
+			`one actions/upload-artifact step with name: ${spec.artifact}, path: ${spec.uploadPaths.join(" and ")}, retention-days: 1, if-no-files-found: error and include-hidden-files: true`,
+		);
 	}
+	const scriptLines = runLines(steps);
+	for (const wanted of spec.runLines) {
+		if (!scriptLines.some((line) => line.startsWith(wanted))) fail("guard-step", `a run: script must keep the line ${wanted}`);
+	}
+	for (const wanted of spec.exactLines) {
+		if (!scriptLines.includes(wanted)) fail("guard-step", `a run: script must hold exactly the line ${wanted}`);
+	}
+	findings.push(...npmFindings(`${WORKFLOWS_DIR}/${name}`, scriptLines));
 	return findings;
 }
 
 /**
- * The findings of the guard on template-checks.yml: every job carries the template's repository condition, and the
- * job that checks pushes and pull requests scans their commits with gitleaks from a release archive whose SHA-256 is checked.
+ * The non-comment lines of every `run:` script of a list of steps, in order, trimmed.
+ * @param {readonly unknown[]} steps
+ * @returns {string[]}
+ */
+function runLines(steps) {
+	return steps.flatMap((step) => (isObject(step) && typeof step.run === "string" ? lines(step.run).filter((line) => !line.startsWith("#")) : []));
+}
+
+/**
+ * The findings of the npm pin: the workflow installs one exact npm version globally and the next script line reads the
+ * version back, so a stale or wrong npm fails the job instead of silently dropping npm 12's deny-by-default for
+ * install scripts (security audit of 2026-11-21, Template S10). The tarball itself carries no hash of its own.
+ * @param {string} file
+ * @param {readonly string[]} scriptLines the lines of the file's `run:` scripts, in order
+ * @returns {Finding[]}
+ */
+function npmFindings(file, scriptLines) {
+	const installs = scriptLines.flatMap((line, index) => {
+		const match = /^npm install --global npm@(\d+\.\d+\.\d+)$/.exec(line);
+		return match === null ? [] : [{ index, version: match[1] }];
+	});
+	const [install] = installs;
+	if (installs.length !== 1 || install === undefined) return [{ file, rule: "guard-step", message: "one run: script line must be npm install --global npm@<exact version>" }];
+	const readBack = `test "$(npm --version)" = "${install.version}"`;
+	if (scriptLines[install.index + 1] !== readBack) return [{ file, rule: "guard-step", message: `the script line after the global npm install must be ${readBack}` }];
+	return [];
+}
+
+/**
+ * The findings of the guard on template-checks.yml: the token stays read-only and the branch lists stay as they are,
+ * every job carries the template's repository condition, and the job that checks pushes and pull requests scans their
+ * commits with gitleaks from a release archive whose SHA-256 is checked.
  * @param {unknown} workflow
  * @returns {Finding[]}
  */
 export function guardTemplateChecks(workflow) {
 	const file = `${WORKFLOWS_DIR}/template-checks.yml`;
 	const jobs = isObject(workflow) && isObject(workflow.jobs) ? Object.entries(workflow.jobs) : [];
-	if (jobs.length === 0) return [{ file, rule: "guard", message: "the file has no jobs" }];
 	/** @type {Finding[]} */
-	const findings = jobs
-		.filter(([, body]) => !isObject(body) || body.if !== TEMPLATE_CONDITION)
-		.map(([job]) => ({ file, rule: "guard-template-only", message: `job ${job} must carry if: ${TEMPLATE_CONDITION}` }));
+	const findings = [];
+	const on = isObject(workflow) && isObject(workflow.on) ? workflow.on : {};
+	for (const [event, branches] of Object.entries(TEMPLATE_BRANCHES)) {
+		const listed = isObject(on[event]) ? on[event].branches : null;
+		if (!Array.isArray(listed) || listed.join(",") !== branches.join(",")) {
+			findings.push({ file, rule: "guard-branches", message: `${event} must run for exactly the branches ${branches.join(", ")}` });
+		}
+	}
+	const permissions = isObject(workflow) ? workflow.permissions : null;
+	if (!isObject(permissions) || Object.keys(permissions).length !== 1 || permissions.contents !== "read") {
+		findings.push({ file, rule: "guard-permissions", message: "permissions must be exactly contents: read" });
+	}
+	for (const [job, body] of jobs) {
+		if (isObject(body) && "permissions" in body) findings.push({ file, rule: "guard-permissions", message: `job ${job} sets its own permissions` });
+	}
+	if (jobs.length === 0) return [...findings, { file, rule: "guard", message: "the file has no jobs" }];
+	findings.push(
+		...jobs
+			.filter(([, body]) => !isObject(body) || body.if !== TEMPLATE_CONDITION)
+			.map(([job]) => ({ file, rule: "guard-template-only", message: `job ${job} must carry if: ${TEMPLATE_CONDITION}` })),
+	);
 	/** @type {(message: string) => void} */
 	const fail = (message) => findings.push({ file, rule: "guard-gitleaks", message });
 	const steps = jobs.flatMap(([, body]) => (isObject(body) && Array.isArray(body.steps) ? body.steps : []));
+	findings.push(...npmFindings(file, runLines(steps)));
 	const gitleaks = steps.find((step) => isObject(step) && step.name === GITLEAKS_STEP);
 	if (!isObject(gitleaks)) {
 		fail(`a step named ${GITLEAKS_STEP} is missing`);
@@ -230,6 +358,7 @@ export function guardTemplateChecks(workflow) {
 	if (!/^[0-9a-f]{64}$/.test(String(env.GITLEAKS_SHA256 ?? ""))) fail("GITLEAKS_SHA256 must be the SHA-256 of the release archive");
 	if (!run.includes("sha256sum --check --strict")) fail("the archive must be checked against its SHA-256 before it is unpacked");
 	if (!run.includes("git rev-list --quiet") || !run.includes("--log-opts=")) fail("gitleaks must scan the commit range of the push or pull request, after git rev-list proves that the range resolves");
+	if (!run.includes('--log-opts="--text -m ')) fail("gitleaks must render the commit range as text with merge diffs (--log-opts=\"--text -m ...\"), so a -diff attribute, an early NUL or a merge resolution hides nothing");
 	const checkout = steps.find((step) => isObject(step) && typeof step.uses === "string" && step.uses.startsWith("actions/checkout@"));
 	if (!isObject(checkout) || !isObject(checkout.with) || checkout.with["fetch-depth"] !== 0) fail("actions/checkout must fetch the full history (fetch-depth: 0) for the commit range");
 	return findings;
@@ -251,7 +380,7 @@ export function workflowFindings(files, actions = new Map()) {
 		const linted = lintWorkflow(`${WORKFLOWS_DIR}/${name}`, text);
 		findings.push(...linted.findings);
 		if (linted.workflow === null) continue;
-		if (name === "fleet-build.yml" || name === "fleet-update.yml") findings.push(...guardBuildWorkflow(name, text, linted.workflow));
+		if (name === "fleet-build.yml" || name === "fleet-update.yml") findings.push(...guardBuildWorkflow(name, linted.workflow));
 		if (name === "template-checks.yml") findings.push(...guardTemplateChecks(linted.workflow));
 	}
 	for (const [path, text] of actions) findings.push(...lintWorkflow(path, text).findings);
