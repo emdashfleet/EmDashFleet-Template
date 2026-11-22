@@ -3,7 +3,7 @@
 // differs from it and on a .npmrc without save-exact (tracker APC-005; app
 // plan, Operations, Versions: every package and the Node.js Active LTS line is
 // pinned exactly). The same rules as scripts/check-pins.ts of
-// Zeyadigital/EmDashFleet-App, which this repository cannot reach. Actions are
+// emdashfleet/EmDashFleet-App, which this repository cannot reach. Actions are
 // pinned by commit SHA, which scripts/check-workflows.mjs checks. A `file:`
 // link to a folder of this repository has no version to pin; a link that
 // climbs out of it with `..` fails. Every `overrides` entry is one exact
