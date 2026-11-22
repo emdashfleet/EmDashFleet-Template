@@ -2,7 +2,7 @@
 // Build and deploy (Workflow files in every site repository) and Testing).
 // Every YAML file under .github/workflows and every action.yml under
 // .github/actions/<name>/ follows the rules of scripts/lint-workflows.ts
-// --template of Zeyadigital/EmDashFleet-App (tracker APC-004), repeated here
+// --template of emdashfleet/EmDashFleet-App (tracker APC-004), repeated here
 // because every site repository copies this template and cannot reach Fleet's
 // code: a file that parses (block scalars included); no YAML anchor, alias,
 // merge key or duplicate key; every `uses:` pinned to a 40-character commit
@@ -35,7 +35,7 @@ const WORKFLOWS_DIR = ".github/workflows";
 const ACTIONS_DIR = ".github/actions";
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const FORBIDDEN_TRIGGERS = new Set(["pull_request_target", "workflow_run", "issue_comment", "repository_dispatch"]);
-const TEMPLATE_CONDITION = "github.repository == 'Zeyadigital/EmDashFleet-Template'";
+const TEMPLATE_CONDITION = "github.repository == 'emdashfleet/EmDashFleet-Template'";
 const GITLEAKS_STEP = "gitleaks";
 /** The branches whose pushes and pull requests start template-checks.yml. */
 const TEMPLATE_BRANCHES = { push: ["dev", "main"], pull_request: ["dev", "main"] };

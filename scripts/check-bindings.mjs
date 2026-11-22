@@ -1,6 +1,6 @@
 // Compares the bindings of wrangler.jsonc with fleet-site-bindings.json, the
 // copy of EmDash Fleet's SiteBindings constants that `npm run
-// export:site-bindings` writes in Zeyadigital/EmDashFleet-App (app plan,
+// export:site-bindings` writes in emdashfleet/EmDashFleet-App (app plan,
 // Sites (template) and Build and deploy (Rules); tracker APA-174). Fleet
 // uploads every build with the binding names of its own records, so a name
 // that differs here would give local development and the deployed site

@@ -1,5 +1,5 @@
 // The output format of the template checks under scripts/, the same as the
-// checks of Zeyadigital/EmDashFleet-App: one line per finding,
+// checks of emdashfleet/EmDashFleet-App: one line per finding,
 // `<file>[:<line>] [<rule>] <message>`, then FAIL or PASS.
 //
 // GitHub Actions reads every line a step prints that starts with `::` as a

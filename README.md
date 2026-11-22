@@ -29,7 +29,7 @@ Keep both workflow files, their names, triggers, inputs, concurrency groups, che
 
 When an EmDash Fleet link asks you to create the repository first:
 
-1. Open [the template](https://github.com/Zeyadigital/EmDashFleet-Template) and choose **Use this template** > **Create a new repository** ([GitHub's guide](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template)).
+1. Open [the template](https://github.com/emdashfleet/EmDashFleet-Template) and choose **Use this template** > **Create a new repository** ([GitHub's guide](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template)).
 2. Choose the owner and the repository name the link names, and keep **Include all branches** off.
 3. Go back to the link and, when GitHub asks which repositories the EmDash Fleet app may access, select only this repository.
 
@@ -70,7 +70,7 @@ These files serve the template's own maintenance, and you can delete them:
 
 ## Maintaining the template
 
-This section applies to `Zeyadigital/EmDashFleet-Template` only.
+This section applies to `emdashfleet/EmDashFleet-Template` only.
 
 - A co-founder pushes alone (github_oauth_plan.md D22, HR-162). `dev` is the integration branch and `main` is the branch Fleet creates repositories from. There is no pull request, review, approver, signed commit, Verified badge or local hook: push to `dev` while working and to `main` when the change is ready. Do not force-push `main`.
 - `template-checks.yml` runs on each push to `dev` and `main` and on Dependabot's pull requests into `dev` and `main` (its security updates target `main`): a gitleaks scan, `npm ci`, the contract tests checklist, `npm run types:check`, the registry signatures, `npm test`, the build, the dry-run bundle, `npm run check:bindings`, `npm run check:workflows`, `npm run check:pins` and `npm run check:migrations`.
@@ -78,5 +78,5 @@ This section applies to `Zeyadigital/EmDashFleet-Template` only.
 - Dependencies: every version in `package.json`, `.nvmrc` and `engines` is exact (`npm run check:pins`), and an action is pinned to a commit SHA. Dependabot opens the weekly pull requests into `dev` for npm and GitHub Actions, and a co-founder merges them.
 - `compatibility_date` in `wrangler.jsonc` is raised to the current date only once the nightly contract tests pass on it, and a change that raises it fails until the line `- [x] The nightly contract tests passed on this change` is in the message of one of the commits of the push.
 - `worker-configuration.d.ts` is generated: run `npm run types` after any change to `wrangler.jsonc`; the template checks fail when it is out of date.
-- `fleet-site-bindings.json` is the output of `npm run export:site-bindings` in `Zeyadigital/EmDashFleet-App`; copy it again whenever the App's site bindings change.
+- `fleet-site-bindings.json` is the output of `npm run export:site-bindings` in `emdashfleet/EmDashFleet-App`; copy it again whenever the App's site bindings change.
 - `src/`, `seed/`, `tsconfig.json` and `emdash-env.d.ts` are derived from EmDash's `blog-cloudflare` template, and `THIRD_PARTY_NOTICES.md` records the source and its licence. Fleet's own files are the request guards that `src/worker.ts` calls (`src/utils/*-guard.ts`, `src/utils/routed-path.ts`) and the helpers `src/utils/feed-cache.ts`, `src/utils/escape-xml.ts`, `src/utils/search-query.ts` and `src/utils/layout-values.ts`; `src/worker.ts` and the pages and layouts that use them differ from EmDash's.

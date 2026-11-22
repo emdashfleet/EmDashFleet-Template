@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   checks:
-    if: github.repository == 'Zeyadigital/EmDashFleet-Template'
+    if: github.repository == 'emdashfleet/EmDashFleet-Template'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
