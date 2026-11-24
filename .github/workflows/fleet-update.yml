@@ -1,18 +1,21 @@
 # Prepares an EmDash or plugin update of this site for EmDash Fleet (app plan,
 # Build and deploy, Workflow files in every site repository, and Health,
 # plugins and updates; tracker APA-171, OAU-088). It runs only when Fleet
-# dispatches it, installs the exact version Fleet names on the latest commit
-# of the branch Fleet dispatched, and keeps the changed files as an artifact
-# for one day: the entry `changes` holds `git status --porcelain=v1 -z
-# --untracked-files=all` and each changed file that still exists is stored as
-# `files/<path>`. Fleet checks the list and commits the files itself; this
-# workflow writes nothing to the repository, holds no secret and runs nothing
-# on the live site. The run uses this repository owner's GitHub Actions
-# minutes. Keep the trigger, the inputs, the run-name, the concurrency group,
-# the checkout and the artifact name as they are: Fleet relies on them (npm run
-# check:workflows). Fleet binds each update to the run it dispatched (a
-# workflow_dispatch of this file on the dispatched branch) and accepts from its
-# artifact only changes to package.json and package-lock.json.
+# dispatches it, installs the exact version Fleet names on the commit the
+# dispatch ran on (github.sha, the head of the branch Fleet dispatched), and
+# keeps the changed files as an artifact for one day: the entry `changes`
+# holds `git status --porcelain=v1 -z --untracked-files=all` and each changed
+# file that still exists is stored as `files/<path>`. The run fails before it
+# stores anything unless the content of the update is what an update changes
+# (scripts/check-update-changes.mjs). Fleet checks the list and commits the
+# files itself; this workflow writes nothing to the repository, holds no
+# secret and runs nothing on the live site. The run uses
+# this repository owner's GitHub Actions minutes. Keep the trigger, the
+# inputs, the run-name, the concurrency group, the checkout and the artifact
+# name as they are: Fleet relies on them (npm run check:workflows). Fleet
+# binds each update to the run it dispatched (a workflow_dispatch of this file
+# on the dispatched branch) and accepts from its artifact only changes to
+# package.json and package-lock.json.
 # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch
 # https://git-scm.com/docs/git-status#_porcelain_format_version_1
 name: fleet-update
@@ -41,8 +44,11 @@ on:
 permissions:
   contents: read
 
-# One update at a time in this repository and never a cancelled run: a second
-# dispatch waits for the first.
+# One update at a time in this repository: a run in progress is never cancelled,
+# and a second dispatch waits as pending. GitHub keeps one pending run per
+# group, so a third dispatch cancels the pending second one (Fleet ends a
+# cancelled run as cancelled). Applies to fleet-build.yml too.
+# https://docs.github.com/en/actions/using-jobs/using-concurrency
 concurrency: fleet-update
 
 jobs:
@@ -67,6 +73,13 @@ jobs:
           [[ "$PACKAGE" =~ $name ]] || { echo "::error::package is not an npm package name"; exit 1; }
           [[ "$VERSION" =~ $semver ]] || { echo "::error::version is not an exact version"; exit 1; }
           [[ "$KIND" == plugin || "$PACKAGE" == emdash ]] || { echo "::error::a core update names the package emdash"; exit 1; }
+          # emdash and @emdash-cms/cloudflare move only together, as a core update
+          # with its own checks; the admin and its design system come with them
+          # (security audit of 2026-11-21, Page S9).
+          core='^(emdash|@emdash-cms/(cloudflare|admin)|@cloudflare/kumo)$'
+          [[ "$KIND" == core || ! "$PACKAGE" =~ $core ]] || { echo "::error::a plugin update names an EmDash core package"; exit 1; }
+          # Fleet offers a core update only to a stable EmDash release (HR-176).
+          [[ "$KIND" == plugin || "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::a core update names a stable release"; exit 1; }
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,8 +90,11 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      # Node.js 26.13.0 bundles npm 11.20.0.
+      # Node.js 26.13.0 bundles npm 11.20.0. The tarball has no hash of its own, so the
+      # version is read back: a stale or wrong npm fails the job here instead of
+      # dropping the deny-by-default of npm 12's allowScripts without a sound.
       - run: npm install --global npm@12.2.2
+      - run: test "$(npm --version)" = "12.2.2"
 
       # A core update moves emdash and @emdash-cms/cloudflare together, and
       # @emdash-cms/cloudflare names emdash as an exact peer, so npm cannot
@@ -91,7 +107,13 @@ jobs:
       # npm install, which resolves those packages again and keeps every other
       # locked version. Leaving the nested entries made npm install drop them
       # when the version did not change, and npm ci then refused the lockfile.
+      # Both installs run with the flags written out: no install script runs (the
+      # job needs none to change the two files) and no dependency comes from a git
+      # reference or a URL. npm 12 already defaults allow-git and allow-remote to
+      # none; the flags keep the job safe if the npm pin moves or a project .npmrc
+      # relaxes them.
       # https://docs.npmjs.com/cli/v11/configuring-npm/package-lock-json
+      # https://docs.npmjs.com/cli/v12/using-npm/config
       - name: Install the update
         env:
           KIND: ${{ inputs.kind }}
@@ -99,7 +121,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           case "$KIND" in
-            plugin) npm install "$PACKAGE@$VERSION" --save-exact ;;
+            plugin) npm install "$PACKAGE@$VERSION" --save-exact --ignore-scripts --allow-git=none --allow-remote=none ;;
             core)
               node --input-type=module -e '
                 import { readFileSync, writeFileSync } from "node:fs";
@@ -115,13 +137,21 @@ jobs:
                 writeFileSync("package.json", JSON.stringify(pkg, null, indentOf(pkgText)) + "\n");
                 const lockText = readFileSync("package-lock.json", "utf8");
                 const lock = JSON.parse(lockText);
+                if (lock.lockfileVersion !== 3) { console.error(`::error::package-lock.json is lockfileVersion ${lock.lockfileVersion}, not 3`); process.exit(1); }
                 const emdash = /(^|\/)node_modules\/(emdash|@emdash-cms\/[^/]+|@cloudflare\/kumo)(\/|$)/;
-                for (const path of Object.keys(lock.packages ?? {})) if (emdash.test(path)) delete lock.packages[path];
+                let removed = 0;
+                for (const path of Object.keys(lock.packages ?? {})) if (emdash.test(path)) { delete lock.packages[path]; removed += 1; }
+                if (removed === 0) { console.error("::error::package-lock.json holds no EmDash package to replace"); process.exit(1); }
                 writeFileSync("package-lock.json", JSON.stringify(lock, null, indentOf(lockText)) + "\n");
               '
-              npm install
+              npm install --ignore-scripts --allow-git=none --allow-remote=none
               ;;
           esac
+
+      # The signature and provenance check of fleet-build.yml, on the tree the
+      # update installed, before anything is stored (security audit of
+      # 2026-11-21, Page S9).
+      - run: node scripts/audit-signatures.mjs
 
       # A rename lists the new path, then the original in the next NUL field,
       # which is skipped. A listed path that no longer exists is not copied.
@@ -129,9 +159,12 @@ jobs:
       # that git tracks (node_modules/ is ignored): any other path means an
       # install script wrote into the repository, and the run fails before
       # anything is stored. Fleet checks the list again before it commits.
+      # The output directory is made afresh, so nothing written there earlier
+      # in the job, by npm install or a package, reaches the artifact.
       - name: Collect the changed files
         run: |
           out="$RUNNER_TEMP/fleet-update"
+          rm -rf -- "$out"
           mkdir -p "$out/files"
           git status --porcelain=v1 -z --untracked-files=all > "$out/changes"
           original=false
@@ -147,6 +180,19 @@ jobs:
               cp -- "$path" "$out/files/$path"
             fi
           done < "$out/changes"
+
+      # npm install may change only the version of the named dependencies in
+      # package.json and the lockfile entries they bring: no other key of
+      # package.json (scripts, overrides, allowScripts, packageManager), a
+      # resolved URL only on registry.npmjs.org with an integrity, an unchanged
+      # name@version keeping its integrity, and a core update that moves emdash
+      # up, never down (scripts/check-update-changes.mjs).
+      - name: Check the changes
+        env:
+          KIND: ${{ inputs.kind }}
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: node scripts/check-update-changes.mjs
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

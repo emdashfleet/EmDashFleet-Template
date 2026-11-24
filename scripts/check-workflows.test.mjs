@@ -36,6 +36,59 @@ test("fails a changed concurrency group, checkout or artifact of a build workflo
 	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace("retention-days: 1", "retention-days: 7")), ["guard-artifact"]);
 });
 
+test("fails a widened upload, a missing upload option and a missing commit or path check of a build workflow", () => {
+	const guard = ["guard-artifact"];
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace("            dist/client/\n", "            dist/client/\n            node_modules/\n")), guard);
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace("            fleet-bundle/\n", "            .\n")), guard);
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace(/ {10}if-no-files-found: error\n/, "")), guard);
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace("include-hidden-files: true", "include-hidden-files: false")), guard);
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace("path: ${{ runner.temp }}/fleet-update/", "path: ${{ github.workspace }}")), guard);
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace(/ {10}if-no-files-found: error\n/, "")), guard);
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace(/ {10}include-hidden-files: true\n/, "")), guard);
+	const commitCheck = / {10}\[\[ "\$COMMIT_SHA" == "\$GITHUB_SHA" \]\].*\n/;
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace(commitCheck, "")), ["guard-step"]);
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace(/( {10})(\[\[ "\$COMMIT_SHA" == "\$GITHUB_SHA" \]\])/, "$1# $2")), ["guard-step"]);
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace("package.json|package-lock.json) ;; *)", "package.json|package-lock.json|src/worker.ts) ;; *)")), ["guard-step"]);
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace("ref: ${{ github.sha }}", "ref: main")), ["guard-checkout"]);
+});
+
+test("fails a build workflow without its output check, its signature check or the refusal of a core package as a plugin", () => {
+	// Security audit of 2026-11-21, Page S9.
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace("[[ -s fleet-bundle/upload-form ]]", "true")), ["guard-step"]);
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace("[[ -d dist/client ]]", "true")), ["guard-step"]);
+	for (const file of ["fleet-build.yml", "fleet-update.yml"]) {
+		assert.deepEqual(rulesAfter(file, (text) => text.replace("node scripts/audit-signatures.mjs", "node scripts/audit-signatures.mjs || true")), ["guard-step"], file);
+	}
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace("|@cloudflare/kumo)", ")")), ["guard-step"]);
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace('[[ "$KIND" == core || ! "$PACKAGE" =~ $core ]]', "true")), ["guard-step"]);
+});
+
+test("fails a fleet-update.yml that does not check the content of the update or the lockfile of a core update", () => {
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace(/ {6}- name: Check the changes\n(?: {8}.*\n)+\n/, "")), ["guard-step"]);
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace("if (lock.lockfileVersion !== 3)", "if (false)")), ["guard-step"]);
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace("if (removed === 0)", "if (false)")), ["guard-step"]);
+});
+
+test("fails template-checks.yml with a wider token, another branch list or a job that sets its own permissions", () => {
+	assert.deepEqual(rulesAfter("template-checks.yml", (text) => text.replace("  contents: read", "  contents: write")), ["guard-permissions"]);
+	assert.deepEqual(rulesAfter("template-checks.yml", (text) => text.replace("    runs-on: ubuntu-latest\n", "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n")), ["guard-permissions"]);
+	assert.deepEqual(rulesAfter("template-checks.yml", (text) => text.replace("branches: [dev, main]", 'branches: ["**"]')), ["guard-branches"]);
+	assert.deepEqual(rulesAfter("template-checks.yml", (text) => text.replace("    branches: [dev, main]\n", "")), ["guard-branches"]);
+	// Both event blocks list dev and main; the second one is the pull_request block (security audit of 2026-11-21, Template S12).
+	const pullRequestBranches = /(pull_request:\n(?: {4}.*\n)*? {4}branches: )\[dev, main\]/;
+	assert.deepEqual(rulesAfter("template-checks.yml", (text) => text.replace(pullRequestBranches, '$1["**"]')), ["guard-branches"]);
+	assert.deepEqual(rulesAfter("template-checks.yml", (text) => text.replace(pullRequestBranches, "$1[dev]")), ["guard-branches"]);
+});
+
+test("fails every spelling of the secrets context in a build workflow, and not a comment that names them", () => {
+	for (const spelling of ["${{ secrets.X }}", "${{ secrets['X'] }}", "${{ toJSON(secrets) }}", "${{secrets.X}}", "${{ format('{0}', secrets.X) }}"]) {
+		assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace("JOB_ID: ${{ inputs.job_id }}", `JOB_ID: ${spelling}`)), ["guard-secrets"], spelling);
+	}
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace("    steps:\n", "    if: secrets.X != ''\n    steps:\n")), ["guard-secrets"]);
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace("  build:\n", "  build:\n    secrets: inherit\n")), ["guard-secrets"]);
+	assert.deepEqual(rulesAfter("fleet-build.yml", (text) => text.replace("name: fleet-build\n", "name: fleet-build\n# Uses secrets.X nowhere; ${{ secrets.X }} would fail.\n")), []);
+});
+
 const SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1";
 const workflow = (body) => `on: workflow_dispatch\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n${body}`;
 const rulesOf = (text) => lintWorkflow("w.yml", text).findings.map((finding) => finding.rule);
@@ -98,4 +151,34 @@ test("fails template-checks.yml without a pinned, verified gitleaks scan of the 
 	assert.deepEqual(rulesAfter("template-checks.yml", (text) => text.replace(/ {10}echo "\$\{GITLEAKS_SHA256\}.*\n/, "")), ["guard-gitleaks"]);
 	assert.deepEqual(rulesAfter("template-checks.yml", (text) => text.replace(/ {10}git rev-list --quiet.*\n/, "")), ["guard-gitleaks"]);
 	assert.deepEqual(rulesAfter("template-checks.yml", (text) => text.replace("fetch-depth: 0", "fetch-depth: 2")), ["guard-gitleaks"]);
+});
+
+test("the update artifact is collected into an output directory made afresh", () => {
+	const text = files.get("fleet-update.yml") ?? "";
+	const step = text.slice(text.indexOf("- name: Collect the changed files"), text.indexOf("actions/upload-artifact@"));
+	assert.match(step, /rm -rf -- "\$out"\n\s+mkdir -p "\$out\/files"/);
+});
+
+test("fails a global npm install that is missing, unpinned or not read back, in every workflow that installs it", () => {
+	const install = / {6}- run: npm install --global npm@12\.2\.2\n/;
+	const readBack = / {6}- run: test "\$\(npm --version\)" = "12\.2\.2"\n/;
+	for (const name of ["fleet-build.yml", "fleet-update.yml", "template-checks.yml"]) {
+		assert.deepEqual(rulesAfter(name, (text) => text.replace(readBack, "")), ["guard-step"], `${name} read-back removed`);
+		assert.deepEqual(rulesAfter(name, (text) => text.replace(readBack, '      - run: test "$(npm --version)" = "12.2.1"\n')), ["guard-step"], `${name} read-back of another version`);
+		assert.deepEqual(rulesAfter(name, (text) => text.replace(readBack, '      - run: test "$(npm --version)" = "12.2.2" || true\n')), ["guard-step"], `${name} read-back with a bypass`);
+		assert.deepEqual(rulesAfter(name, (text) => text.replace(install, "      - run: npm install --global npm\n")), ["guard-step"], `${name} unpinned install`);
+		assert.deepEqual(rulesAfter(name, (text) => text.replace(install, "")), ["guard-step"], `${name} install removed`);
+		assert.deepEqual(rulesAfter(name, (text) => text.replace(readBack, "      - run: node --version\n$&")), ["guard-step"], `${name} step between install and read-back`);
+	}
+});
+
+test("fails an update install that runs scripts or may fetch from git or a URL", () => {
+	const plugin = 'plugin) npm install "$PACKAGE@$VERSION" --save-exact --ignore-scripts --allow-git=none --allow-remote=none ;;';
+	const core = "              npm install --ignore-scripts --allow-git=none --allow-remote=none\n";
+	for (const flag of [" --ignore-scripts", " --allow-git=none", " --allow-remote=none"]) {
+		assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace(plugin, plugin.replace(flag, ""))), ["guard-step"], `plugin without${flag}`);
+		assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace(core, core.replace(flag, ""))), ["guard-step"], `core without${flag}`);
+	}
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace(plugin, plugin.replace("--allow-git=none", "--allow-git=all"))), ["guard-step"]);
+	assert.deepEqual(rulesAfter("fleet-update.yml", (text) => text.replace(core, core.replace("\n", " --ignore-scripts=false\n"))), ["guard-step"]);
 });

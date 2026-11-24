@@ -2,7 +2,7 @@
 // scripts/audit-signatures.mjs (app plan, Security (Template supply chain)).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { signatureFindings } from "./audit-signatures.mjs";
+import { signatureFindings, warningCommand } from "./audit-signatures.mjs";
 
 const installed = [
 	{ location: "node_modules/@emdash-fleet/example-plugin", name: "@emdash-fleet/example-plugin", version: "1.0.0" },
@@ -30,4 +30,12 @@ test("passes when Fleet's and EmDash's packages are attested, whatever other pac
 		verified: installed.slice(0, 2).map((pkg) => ({ ...pkg, attestations: provenance })),
 	};
 	assert.deepEqual(signatureFindings(audit, installed), { failures: [], warnings: [] });
+});
+
+test("a warning command stays one line whatever a package name holds", () => {
+	assert.equal(warningCommand("package-lock.json", "emdash@1.4.0 has no registry signature"), "::warning file=package-lock.json::emdash@1.4.0 has no registry signature");
+	const command = warningCommand("package-lock.json", "100% x\r\n::error::forged\n::stop-commands::token");
+	assert.equal(command, "::warning file=package-lock.json::100%25 x%0D%0A::error::forged%0A::stop-commands::token");
+	assert.doesNotMatch(command, /[\r\n]/);
+	assert.equal(warningCommand("a:b,c\n.json", "x"), "::warning file=a%3Ab%2Cc%0A.json::x");
 });

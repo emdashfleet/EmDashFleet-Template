@@ -2,16 +2,24 @@
 
 An [EmDash](https://github.com/emdash-cms/emdash) site for Cloudflare Workers, created from the EmDash Fleet site template. [EmDash Fleet](https://emdashfleet.com) builds this repository, deploys it to the Cloudflare account it was connected with and installs EmDash and plugin updates when someone asks for them in Fleet. It is an ordinary Astro and EmDash project: the site keeps running without Fleet, and you can build and deploy it yourself.
 
+## Finish the setup right after the first deploy
+
+A newly deployed site has no user until someone completes the EmDash setup wizard at `/_emdash/admin`, and EmDash makes whoever completes it first the site's administrator; it asks for no proof that this person owns the site. Open "Finish the EmDash setup" in Fleet as soon as the first deploy ends. If the wizard says the setup is already complete and you did not complete it, delete the site in Fleet and create it again.
+
 ## Workers Free and sandboxed plugins
 
 The site runs on Workers Free and on Workers Paid. `wrangler.jsonc` declares no `worker_loaders` binding, so EmDash's sandboxed plugins are disabled: EmDash's Cloudflare plugin sandbox needs Workers Paid and a `worker_loaders` binding named `LOADER`, and without it sandboxed plugins do not load ([Installing plugins](https://docs.emdashcms.com/plugins/installing/), [Plugin sandbox](https://docs.emdashcms.com/deployment/plugin-sandbox/)).
+
+## Scheduled publishing
+
+`wrangler.jsonc` runs EmDash's scheduler on the Cron Trigger `*/5 * * * *`, which Fleet sends again with every deploy, and `src/worker.ts` calls `createScheduledHandler()` without `generalCron`. With `@emdash-cms/cloudflare` 1.5.0 each run publishes only the entries already due, so a scheduled entry goes live up to about 5 minutes after its time; EmDash's own starter templates run the trigger every minute ([Deploy to Cloudflare](https://docs.emdashcms.com/deployment/cloudflare/)). Keep the trigger and the handler as they are: a handler whose `generalCron` differs from the trigger ignores it, and scheduled entries are then never published.
 
 ## How EmDash Fleet builds and updates the site
 
 The two workflows in `.github/workflows/` run only when someone starts a deployment or an update in Fleet. Neither runs on a push, a pull request or a schedule, and Fleet never sets up Cloudflare builds, so pushing to this repository deploys nothing.
 
 - `fleet-build.yml` checks out the commit Fleet names, runs `npm ci`, checks the npm registry signatures of the installed packages (`scripts/audit-signatures.mjs`), runs `npm run build` and bundles the Worker with `npx wrangler versions upload --dry-run`, which uploads nothing. It keeps the bundle and the static files as a workflow artifact for one day; Fleet downloads it and uploads the new version to Cloudflare itself.
-- `fleet-update.yml` installs the exact EmDash or plugin version Fleet names on the latest commit of the default branch and keeps the changed files as a workflow artifact for one day. Fleet checks them and commits them to this repository; the workflow writes nothing.
+- `fleet-update.yml` installs the exact EmDash or plugin version Fleet names on the head of the branch Fleet dispatches it on and keeps the changed files as a workflow artifact for one day. Fleet checks them and commits them to this repository; the workflow writes nothing.
 
 Both workflows only read the repository and hold no secret and no Cloudflare credential. Fleet builds this site with GitHub Actions in the repository, within the repository owner's GitHub Actions allowance (USD 12 of usage a month included on GitHub Free) and 500 MB of artifact storage; usage beyond that is charged by GitHub to the repository owner ([GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions), [included usage](https://docs.github.com/en/billing/reference/product-usage-included)).
 
@@ -21,7 +29,7 @@ Keep both workflow files, their names, triggers, inputs, concurrency groups, che
 
 When an EmDash Fleet link asks you to create the repository first:
 
-1. Open [the template](https://github.com/Zeyadigital/EmDashFleet-Template) and choose **Use this template** > **Create a new repository** ([GitHub's guide](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template)).
+1. Open [the template](https://github.com/emdashfleet/EmDashFleet-Template) and choose **Use this template** > **Create a new repository** ([GitHub's guide](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template)).
 2. Choose the owner and the repository name the link names, and keep **Include all branches** off.
 3. Go back to the link and, when GitHub asks which repositories the EmDash Fleet app may access, select only this repository.
 
@@ -55,20 +63,20 @@ npm run dev
 
 These files serve the template's own maintenance, and you can delete them:
 
-- `.github/workflows/template-checks.yml` runs only in the template repository itself: it starts on a push to `dev` or `main` and on a pull request into `dev`, and the job's condition names the template repository, so in a site repository the job is skipped.
+- `.github/workflows/template-checks.yml` runs only in the template repository itself: it starts on a push to `dev` or `main` and on a pull request into `dev` or `main`, and the job's condition names the template repository, so in a site repository the job is skipped.
 - `.github/dependabot.yml` serves only the template repository: it turns on Dependabot version updates. Fleet never deletes a file from your repository, so it stays until you delete it.
 - `.gitleaks.toml` serves the template's secret scanning in `template-checks.yml`.
-- `fleet-site-bindings.json` and the other files in `scripts/` that the template checks use, among them `scripts/check-pins.mjs` and `scripts/check-workflows.mjs`.
+- `fleet-site-bindings.json` and the other files in `scripts/` that the template checks use, among them `scripts/check-pins.mjs` and `scripts/check-workflows.mjs`. Keep `scripts/audit-signatures.mjs`, `scripts/check-update-changes.mjs` and `scripts/lib/`: Fleet's build and update workflows run them, and both fail without them.
 
 ## Maintaining the template
 
-This section applies to `Zeyadigital/EmDashFleet-Template` only.
+This section applies to `emdashfleet/EmDashFleet-Template` only.
 
 - A co-founder pushes alone (github_oauth_plan.md D22, HR-162). `dev` is the integration branch and `main` is the branch Fleet creates repositories from. There is no pull request, review, approver, signed commit, Verified badge or local hook: push to `dev` while working and to `main` when the change is ready. Do not force-push `main`.
-- `template-checks.yml` runs on each push to `dev` and `main` and on Dependabot's pull requests into `dev`: a gitleaks scan, `npm ci`, the contract tests checklist, `npm run types:check`, the registry signatures, `npm test`, the build, the dry-run bundle, `npm run check:bindings`, `npm run check:workflows`, `npm run check:pins` and `npm run check:migrations`.
+- `template-checks.yml` runs on each push to `dev` and `main` and on Dependabot's pull requests into `dev` and `main` (its security updates target `main`): a gitleaks scan, `npm ci`, the contract tests checklist, `npm run types:check`, the registry signatures, `npm test`, the build, the dry-run bundle, `npm run check:bindings`, `npm run check:workflows`, `npm run check:pins` and `npm run check:migrations`.
 - Secret scanning: gitleaks 8.30.1 runs in `template-checks.yml` only, from its release archive checked against the SHA-256 in the file, over the commits of each push or pull request. Nothing is installed or configured in a clone.
 - Dependencies: every version in `package.json`, `.nvmrc` and `engines` is exact (`npm run check:pins`), and an action is pinned to a commit SHA. Dependabot opens the weekly pull requests into `dev` for npm and GitHub Actions, and a co-founder merges them.
 - `compatibility_date` in `wrangler.jsonc` is raised to the current date only once the nightly contract tests pass on it, and a change that raises it fails until the line `- [x] The nightly contract tests passed on this change` is in the message of one of the commits of the push.
 - `worker-configuration.d.ts` is generated: run `npm run types` after any change to `wrangler.jsonc`; the template checks fail when it is out of date.
-- `fleet-site-bindings.json` is the output of `npm run export:site-bindings` in `Zeyadigital/EmDashFleet-App`; copy it again whenever the App's site bindings change.
-- `src/`, `seed/`, `tsconfig.json` and `emdash-env.d.ts` come unchanged from EmDash's `blog-cloudflare` template; `THIRD_PARTY_NOTICES.md` records the source and its licence.
+- `fleet-site-bindings.json` is the output of `npm run export:site-bindings` in `emdashfleet/EmDashFleet-App`; copy it again whenever the App's site bindings change.
+- `src/`, `seed/`, `tsconfig.json` and `emdash-env.d.ts` are derived from EmDash's `blog-cloudflare` template, and `THIRD_PARTY_NOTICES.md` records the source and its licence. Fleet's own files are the request guards that `src/worker.ts` calls (`src/utils/*-guard.ts`, `src/utils/routed-path.ts`) and the helpers `src/utils/feed-cache.ts`, `src/utils/escape-xml.ts`, `src/utils/search-query.ts` and `src/utils/layout-values.ts`; `src/worker.ts` and the pages and layouts that use them differ from EmDash's.

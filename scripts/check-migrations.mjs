@@ -26,7 +26,29 @@ const MANIFEST = ".emdash/migrations.json";
 const WRANGLER = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
 const READY_TIMEOUT_MS = 120_000;
 const STOP_TIMEOUT_MS = 15_000;
-const QUIET_ENV = { ...process.env, WRANGLER_SEND_METRICS: "false" };
+// The environment of wrangler: only what a local run needs, not the whole of
+// process.env, so a token that the job or a developer's shell holds (a
+// CLOUDFLARE_API_TOKEN, a GITHUB_TOKEN) never reaches wrangler or workerd
+// (security audit of 2026-11-21, Template S17). Wrangler reads its
+// configuration folders from HOME or XDG_*, and CI makes it non-interactive.
+const ENV_NAMES = ["PATH", "HOME", "TMPDIR", "TERM", "LANG", "LC_ALL", "CI", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"];
+
+/**
+ * The environment of the wrangler processes.
+ * @param {Record<string, string | undefined>} env the environment of this script
+ * @returns {Record<string, string>}
+ */
+export function quietEnv(env) {
+	/** @type {Record<string, string>} */
+	const kept = { ASTRO_TELEMETRY_DISABLED: "1", WRANGLER_SEND_METRICS: "false" };
+	for (const name of ENV_NAMES) {
+		const value = env[name];
+		if (value !== undefined) kept[name] = value;
+	}
+	return kept;
+}
+
+const QUIET_ENV = quietEnv(process.env);
 
 /**
  * The findings of a comparison between the applied migrations and the manifest.

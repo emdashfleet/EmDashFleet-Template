@@ -1,5 +1,6 @@
 ---
 import type { ContentBylineCredit } from "emdash";
+import { mediaFilePath } from "../utils/layout-values";
 
 interface Props {
 	bylines: ContentBylineCredit[];
@@ -26,7 +27,7 @@ const people = bylines.map(({ byline, roleLabel }) => ({
 	role: roleLabel,
 	src: byline.avatarStorageKey
 		? (Astro.locals.emdash?.getPublicMediaUrl?.(byline.avatarStorageKey) ??
-			`/_emdash/api/media/file/${byline.avatarStorageKey.split("/").map(encodeURIComponent).join("/")}`)
+			mediaFilePath(byline.avatarStorageKey))
 		: null,
 	initials: byline.displayName
 		.split(WHITESPACE)

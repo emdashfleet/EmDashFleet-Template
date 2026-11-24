@@ -3,16 +3,28 @@ export const prerender = false;
 
 import { search } from "emdash";
 import Base from "../layouts/Base.astro";
+import { boundedQuery } from "../utils/search-query";
 
-const query = Astro.url.searchParams.get("q")?.trim() || "";
+// Trimmed and cut to 200 characters: this page calls search() directly, so
+// nothing else bounds what an anonymous visitor sends to the index.
+const query = boundedQuery(Astro.url.searchParams.get("q"));
 
 // Use the FTS-backed search() API instead of loading every post and
 // filtering in JS. FTS scales as the post count grows, returns ranked
 // results, and handles tokenization/stemming. Templates that grep all
 // post bodies in JS quickly become unusable past a few hundred posts.
-const { items: results, nextCursor } = query
-	? await search(query, { collections: ["posts"], limit: 30 })
-	: { items: [], nextCursor: undefined };
+// search() swallows only FTS5 syntax errors; any other error of the index
+// (such as "no such column" for a query like `a AND nocol:b`) is rethrown,
+// and would answer an anonymous visitor with a 500. It shows the empty state.
+let found: Awaited<ReturnType<typeof search>> = { items: [] };
+if (query) {
+	try {
+		found = await search(query, { collections: ["posts"], limit: 30 });
+	} catch (error) {
+		console.error("search failed:", error instanceof Error ? error.message : error);
+	}
+}
+const { items: results, nextCursor } = found;
 
 function escapeHtml(text: string) {
 	return text

@@ -62,14 +62,24 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      # Node.js 26.13.0 bundles npm 11.20.0.
+      # Node.js 26.13.0 bundles npm 11.20.0. The tarball has no hash of its own, so the
+      # version is read back: a stale or wrong npm fails the job here instead of
+      # dropping the deny-by-default of npm 12's allowScripts without a sound.
       - run: npm install --global npm@12.2.2
+      - run: test "$(npm --version)" = "12.2.2"
       - run: npm ci
       # Fails on an unsigned or unattested @emdash-fleet/* package and warns
       # for emdash and @emdash-cms/* (app plan, Template supply chain).
       - run: node scripts/audit-signatures.mjs
       - run: npm run build
       - run: npx wrangler versions upload --dry-run --outfile fleet-bundle/upload-form
+      # if-no-files-found fails only when neither path exists, so a build that
+      # wrote one of the two would otherwise upload half an artifact (security
+      # audit of 2026-11-21, Page S9).
+      - name: Check the build output
+        run: |
+          [[ -s fleet-bundle/upload-form ]] || { echo "::error::wrangler wrote no fleet-bundle/upload-form"; exit 1; }
+          [[ -d dist/client ]] || { echo "::error::the build wrote no dist/client"; exit 1; }
 
       # Two paths, so the artifact's root is the repository: fleet-bundle/ and
       # dist/client/, with the hidden .assetsignore Fleet honours as Wrangler does.

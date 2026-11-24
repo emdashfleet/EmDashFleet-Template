@@ -1,5 +1,5 @@
 # The checks of every push to dev or main of the EmDash Fleet site template and
-# of Dependabot's pull requests into dev (github_oauth_plan.md D22 (HR-162);
+# of Dependabot's pull requests into dev and main (github_oauth_plan.md D22 (HR-162);
 # app plan, Sites (template); HR-118, HR-119; tracker APA-172, APA-173,
 # APA-174, APA-175, OAU-089, APB-001, APC-004). A co-founder pushes alone: no
 # pull request, review, approver or signed commit is required. The checklist
@@ -18,7 +18,7 @@ on:
     branches: [dev, main]
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [dev]
+    branches: [dev, main]
 
 permissions:
   contents: read
@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   checks:
-    if: github.repository == 'Zeyadigital/EmDashFleet-Template'
+    if: github.repository == 'emdashfleet/EmDashFleet-Template'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -65,21 +65,34 @@ jobs:
           # gitleaks 8.30.1 exits 0 when its git log fails, so a range that
           # does not resolve would pass unscanned.
           git rev-list --quiet "${BASE_SHA}..${HEAD_SHA}"
-          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --verbose --log-opts="${BASE_SHA}..${HEAD_SHA}" .
+          # --text renders every commit of the range as text, so a -diff or
+          # binary attribute, or a NUL early in a file, does not hide a token
+          # from gitleaks behind "Binary files ... differ" (security audit of
+          # 2026-11-21, Watch h11). -m shows each merge commit's diff against
+          # every parent: git log -p prints no diff for a merge by default, so
+          # a token added while resolving a merge would pass unscanned (same
+          # audit, Watch v04).
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --verbose --log-opts="--text -m ${BASE_SHA}..${HEAD_SHA}" .
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
 
-      # Node.js 26.13.0 bundles npm 11.20.0.
+      # Node.js 26.13.0 bundles npm 11.20.0. The tarball has no hash of its own, so the
+      # version is read back: a stale or wrong npm fails the job here instead of
+      # dropping the deny-by-default of npm 12's allowScripts without a sound.
       - run: npm install --global npm@12.2.2
+      - run: test "$(npm --version)" = "12.2.2"
       - run: npm ci
       - name: Check the contract tests checklist
         env:
           CHECK_BASE: ${{ github.event_name == 'push' && github.event.before || 'HEAD^1' }}
         run: node scripts/check-pull-request.mjs "$CHECK_BASE"
       - run: npm run types:check
+      # astro check type-checks the pages' scripts, which the build does not: a bundler drops a
+      # broken import without an error (review of the security audit of 2026-11-21 fixes).
+      - run: npm run typecheck
       - run: node scripts/audit-signatures.mjs
       - run: npm test
       - run: npm run build
